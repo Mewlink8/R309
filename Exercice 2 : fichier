@@ -1,0 +1,30 @@
+# Créez le fichier "test.txt" en écriture (ouverture en mode 'w')
+with open("test.txt", 'w') as fichier:
+    fichier.write("Contenu du fichier ")
+
+try:
+    # Spécifiez le nom du fichier dans une variable
+    nom_fichier = "test.txt"
+
+    # Ouvrez le fichier en lecture
+    with open(nom_fichier, 'r') as fichier:
+        # Lisez et affichez les lignes du fichier
+        for ligne in fichier:
+            # Utilisez rstrip pour supprimer les caractères de retour à la ligne
+            ligne = ligne.rstrip('\n\r')
+            print(ligne)
+
+except FileNotFoundError:
+    print("Fichier non trouvé : Le fichier spécifié n'existe pas.")
+
+except IOError:
+    print("Erreur d'E/S : Une erreur s'est produite lors de la lecture du fichier.")
+
+except FileExistsError:
+    print("Erreur de création de fichier : Le fichier spécifié existe déjà.")
+
+except PermissionError:
+    print("Erreur de permission : Vous n'avez pas la permission d'accéder au fichier.")
+
+finally:
+    print("Fin du programme.")
