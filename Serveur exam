@@ -1,0 +1,156 @@
+import sys
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout, QHBoxLayout
+from PyQt5.QtCore import QThread, pyqtSignal
+import socket
+
+class GestionnaireClient(QThread):
+    message_recu = pyqtSignal(str, tuple)
+    client_deconnecte = pyqtSignal(tuple)
+    def __init__(self, socket_client, adresse):
+        super().__init__()
+        self.socket_client = socket_client
+        self.adresse = adresse
+
+    def run(self):
+        try:
+            while True:
+                donnees = self.socket_client.recv(1024)
+                if not donnees:
+                    break
+                donnees_decodees = donnees.decode('utf-8')
+                self.message_recu.emit(donnees_decodees, self.adresse)
+
+        except Exception as e:
+            print(f"Erreur de réception : {e}")
+            self.client_deconnecte.emit(self.adresse)
+        finally:
+            self.socket_client.close()
+
+class ThreadServeur(QThread):
+    message_recu = pyqtSignal(str)
+    changement_etat_serveur = pyqtSignal(bool)
+
+    def __init__(self, adresse, port, max_clients):
+        super().__init__()
+        self.socket_serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket_serveur.bind((adresse, port))
+        self.socket_serveur.listen(max_clients)
+        self.clients = []
+        self.en_marche = False
+
+    def run(self):
+        self.en_marche = True
+        self.changement_etat_serveur.emit(True)
+
+        while self.en_marche:
+            try:
+                socket_client, adresse_client = self.socket_serveur.accept()
+                self.message_recu.emit(f"Connexion acceptée de {adresse_client[0]}:{adresse_client[1]}")
+                gestionnaire_client = GestionnaireClient(socket_client, adresse_client)
+                gestionnaire_client.message_recu.connect(self.gerer_message_client)
+                gestionnaire_client.client_deconnecte.connect(self.gerer_client_deconnecte)
+                gestionnaire_client.start()
+
+                self.clients.append((gestionnaire_client, adresse_client))
+
+            except Exception as e:
+                print(f"Erreur de connexion : {e}")
+
+        self.socket_serveur.close()
+
+    def gerer_message_client(self, message, adresse_expediteur):
+        self.message_recu.emit(f"{adresse_expediteur[0]}:{adresse_expediteur[1]}> {message}")
+
+    def gerer_client_deconnecte(self, adresse_client):
+        self.message_recu.emit(f"Le client {adresse_client[0]}:{adresse_client[1]} s'est déconnecté.")
+        self.clients = [client for client in self.clients if client[1] != adresse_client]
+
+    def arreter_serveur(self):
+        self.en_marche = False
+        self.changement_etat_serveur.emit(False)
+        self.socket_serveur.close()
+
+class InterfaceServeur(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.thread_serveur = None
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("Le serveur de tchat")
+        self.label_serveur = QLabel("Serveur")
+        self.entree_adresse = QLineEdit("0.0.0.0")
+        self.label_port = QLabel("Port")
+        self.entree_port = QLineEdit("10000")
+        self.label_max_clients = QLabel("Nombre de clients maximum")
+        self.entree_max_clients = QLineEdit("5")
+        self.bouton_demarrage_arret = QPushButton("Démarrage du serveur")
+        self.bouton_demarrage_arret.clicked.connect(self.toggle_serveur)
+        self.text_edit = QTextEdit()
+        self.text_edit.setReadOnly(True)
+
+        self.bouton_quitter = QPushButton("Quitter")
+        self.bouton_quitter.clicked.connect(self.close)
+
+        layout_serveur = QHBoxLayout()
+        layout_serveur.addWidget(self.label_serveur)
+        layout_serveur.addWidget(self.entree_adresse)
+
+        layout_port = QHBoxLayout()
+        layout_port.addWidget(self.label_port)
+        layout_port.addWidget(self.entree_port)
+
+        layout_max_clients = QHBoxLayout()
+        layout_max_clients.addWidget(self.label_max_clients)
+        layout_max_clients.addWidget(self.entree_max_clients)
+
+        layout_bouton = QVBoxLayout()
+        layout_bouton.addWidget(self.bouton_demarrage_arret)
+
+        layout_bouton2 = QVBoxLayout()
+        layout_bouton2.addWidget(self.bouton_quitter)
+
+        layout = QVBoxLayout()
+        layout.addLayout(layout_serveur)
+        layout.addLayout(layout_port)
+        layout.addLayout(layout_max_clients)
+        layout.addLayout(layout_bouton)
+        layout.addWidget(self.text_edit)
+        layout.addLayout(layout_bouton2)
+
+        self.setLayout(layout)
+
+    def toggle_serveur(self):
+        if self.thread_serveur and self.thread_serveur.en_marche:
+            self.thread_serveur.arreter_serveur()
+            self.bouton_demarrage_arret.setText("Démarrage du serveur")
+        else:
+            adresse = self.entree_adresse.text()
+            port = int(self.entree_port.text())
+            max_clients = int(self.entree_max_clients.text())
+
+            try:
+                self.thread_serveur = ThreadServeur(adresse, port, max_clients)
+                self.thread_serveur.message_recu.connect(self.gerer_message_serveur)
+                self.thread_serveur.changement_etat_serveur.connect(self.actualiser_etat_serveur)
+                self.thread_serveur.start()
+
+                self.bouton_demarrage_arret.setText("Arrêt du serveur")
+
+            except Exception as e:
+                print(f"Erreur lors du démarrage du serveur : {e}")
+
+    def gerer_message_serveur(self, message):
+        self.text_edit.append(message)
+
+    def actualiser_etat_serveur(self, en_marche):
+        if en_marche:
+            self.bouton_demarrage_arret.setText("Arrêt du serveur")
+        else:
+            self.bouton_demarrage_arret.setText("Démarrage du serveur")
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    interface_serveur = InterfaceServeur()
+    interface_serveur.show()
+    sys.exit(app.exec_())
