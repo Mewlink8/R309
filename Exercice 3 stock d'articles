@@ -1,0 +1,116 @@
+class Article:
+    TVA = 0.20  # Taux de TVA (20%)
+
+    def __init__(self, nom, code_barre, prix_ht):
+        if not isinstance(nom, str) or not isinstance(code_barre, str) or not isinstance(prix_ht, (int, float)) or prix_ht <= 0:
+            raise ValueError("Les attributs de l'article ne sont pas valides.")
+        self.nom = nom
+        self.code_barre = code_barre
+        self.prix_ht = prix_ht
+
+    def get_nom(self):
+        return self.nom
+
+    def get_code_barre(self):
+        return self.code_barre
+
+    def get_prix_ht(self):
+        return self.prix_ht
+
+    def set_prix_ht(self, nouveau_prix):
+        if not isinstance(nouveau_prix, (int, float)) or nouveau_prix <= 0:
+            raise ValueError("Le nouveau prix HT n'est pas valide.")
+        self.prix_ht = nouveau_prix
+
+    def prix_ttc(self):
+        return self.prix_ht * (1 + self.TVA)
+
+
+class Stock:
+    def __init__(self):
+        self.stock = {}
+
+    def taille(self):
+        return len(self.stock)
+
+    def ajout(self, article):
+        if article.get_code_barre() in self.stock:
+            raise ValueError("Un article avec le même code-barre est déjà en stock.")
+        self.stock[article.get_code_barre()] = article
+
+    def recherche_par_code_barre(self, code_barre):
+        if code_barre not in self.stock:
+            raise ValueError("L'article n'est pas en stock.")
+        return self.stock[code_barre]
+
+    def recherche_par_nom(self, nom):
+        for article in self.stock.values():
+            if article.get_nom() == nom:
+                return article
+        raise ValueError("L'article n'est pas en stock.")
+
+    def supprime_par_code_barre(self, code_barre):
+        if code_barre not in self.stock:
+            raise ValueError("L'article n'est pas en stock.")
+        del self.stock[code_barre]
+
+    def supprime_par_nom(self, nom):
+        article = self.recherche_par_nom(nom)
+        self.supprime_par_code_barre(article.get_code_barre())
+
+    def charger_depuis_csv(self, nom_fichier):
+        import csv
+        try:
+            with open(nom_fichier, 'r', newline='') as fichier_csv:
+                lecteur_csv = csv.reader(fichier_csv, delimiter=';')
+                for ligne in lecteur_csv:
+                    if len(ligne) != 3:
+                        raise ValueError("Le fichier CSV n'a pas le bon format.")
+                    nom, code_barre, prix_ht = ligne
+                    try:
+                        self.ajout(Article(nom, code_barre, float(prix_ht)))
+                    except ValueError as e:
+                        print(f"Erreur lors de l'ajout de l'article : {e}")
+        except FileNotFoundError:
+            raise FileNotFoundError("Fichier CSV non trouvé.")
+
+    def sauvegarder_dans_csv(self, nom_fichier):
+        import csv
+        with open(nom_fichier, 'w', newline='') as fichier_csv:
+            ecriture_csv = csv.writer(fichier_csv, delimiter=';')
+            for article in self.stock.values():
+                ecriture_csv.writerow([article.get_nom(), article.get_code_barre(), article.get_prix_ht()])
+
+
+# Exemple d'utilisation
+if __name__ == "__main__":
+    stock = Stock()
+    try:
+        article1 = Article("Produit 1", "12345", 10.0)
+        article2 = Article("Produit 2", "67890", 15.0)
+        article3 = Article("Produit 3", "12345", 12.0)  # Le même code-barre génère une exception
+        stock.ajout(article1)
+        stock.ajout(article2)
+        stock.ajout(article3)
+    except ValueError as e:
+        print(e)
+
+    print("Taille du stock :", stock.taille())
+    print("Prix TTC de l'article 1 :", article1.prix_ttc())
+
+    try:
+        article2.set_prix_ht(20.0)
+        article3.set_prix_ht(-5.0)  # Prix HT négatif génère une exception
+    except ValueError as e:
+        print(e)
+
+    print("Prix TTC de l'article 2 après modification :", article2.prix_ttc())
+
+    stock.sauvegarder_dans_csv("stock.csv")
+    stock.charger_depuis_csv("stock.csv")
+
+    article4 = stock.recherche_par_code_barre("12345")
+    print("Article 4 - Nom :", article4.get_nom())
+    print("Article 4 - Prix TTC :", article4.prix_ttc())
+    stock.supprime_par_code_barre("12345")
+    print("Taille du stock après suppression :", stock.taille())
