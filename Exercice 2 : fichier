@@ -15,16 +15,21 @@ try:
             print(ligne)
 
 except FileNotFoundError:
+    # Gère l'exception si le fichier n'est pas trouvé
     print("Fichier non trouvé : Le fichier spécifié n'existe pas.")
 
 except IOError:
+    # Gère l'exception en cas d'erreur d'E/S lors de la lecture du fichier
     print("Erreur d'E/S : Une erreur s'est produite lors de la lecture du fichier.")
 
 except FileExistsError:
+    # Gère l'exception si le fichier existe déjà lors de la création
     print("Erreur de création de fichier : Le fichier spécifié existe déjà.")
 
 except PermissionError:
+    # Gère l'exception si l'accès au fichier est refusé en raison de permissions
     print("Erreur de permission : Vous n'avez pas la permission d'accéder au fichier.")
 
 finally:
+    # Code qui s'exécute toujours, que l'exception soit levée ou non
     print("Fin du programme.")
