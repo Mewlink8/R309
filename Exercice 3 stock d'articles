@@ -2,6 +2,7 @@ class Article:
     TVA = 0.20  # Taux de TVA (20%)
 
     def __init__(self, nom, code_barre, prix_ht):
+        # Vérification des types et des valeurs des paramètres
         if not isinstance(nom, str) or not isinstance(code_barre, str) or not isinstance(prix_ht, (int, float)) or prix_ht <= 0:
             raise ValueError("Les attributs de l'article ne sont pas valides.")
         self.nom = nom
@@ -18,6 +19,7 @@ class Article:
         return self.prix_ht
 
     def set_prix_ht(self, nouveau_prix):
+        # Vérification du type et de la valeur du nouveau prix HT
         if not isinstance(nouveau_prix, (int, float)) or nouveau_prix <= 0:
             raise ValueError("Le nouveau prix HT n'est pas valide.")
         self.prix_ht = nouveau_prix
@@ -34,27 +36,32 @@ class Stock:
         return len(self.stock)
 
     def ajout(self, article):
+        # Vérification si un article avec le même code-barre est déjà en stock
         if article.get_code_barre() in self.stock:
             raise ValueError("Un article avec le même code-barre est déjà en stock.")
         self.stock[article.get_code_barre()] = article
 
     def recherche_par_code_barre(self, code_barre):
+        # Recherche de l'article par code-barre
         if code_barre not in self.stock:
             raise ValueError("L'article n'est pas en stock.")
         return self.stock[code_barre]
 
     def recherche_par_nom(self, nom):
+        # Recherche de l'article par nom
         for article in self.stock.values():
             if article.get_nom() == nom:
                 return article
         raise ValueError("L'article n'est pas en stock.")
 
     def supprime_par_code_barre(self, code_barre):
+        # Suppression de l'article par code-barre
         if code_barre not in self.stock:
             raise ValueError("L'article n'est pas en stock.")
         del self.stock[code_barre]
 
     def supprime_par_nom(self, nom):
+        # Suppression de l'article par nom
         article = self.recherche_par_nom(nom)
         self.supprime_par_code_barre(article.get_code_barre())
 
@@ -64,6 +71,7 @@ class Stock:
             with open(nom_fichier, 'r', newline='') as fichier_csv:
                 lecteur_csv = csv.reader(fichier_csv, delimiter=';')
                 for ligne in lecteur_csv:
+                    # Vérification du format du fichier CSV
                     if len(ligne) != 3:
                         raise ValueError("Le fichier CSV n'a pas le bon format.")
                     nom, code_barre, prix_ht = ligne
