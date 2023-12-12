@@ -1,19 +1,24 @@
+# Importe les modules nécessaires
 import socket
 import threading
 
 # Utilisation d'un objet Event pour signaler l'arrêt du serveur
 server_stopped_event = threading.Event()
 
+# Fonction pour gérer la réception des messages du client
 def handle_client_receive(client_socket):
     try:
         while True:
+            # Reçoit des données du client et les décode en UTF-8
             client_data = client_socket.recv(1024).decode('utf-8')
             if not client_data:
+                # Si aucune donnée n'est reçue, le client s'est déconnecté
                 print("Le client s'est déconnecté")
                 break
 
             print(f"Client dit : {client_data}")
 
+            # Si le client envoie "arret" ou "bye", le serveur s'arrête
             if client_data == "arret":
                 print("Le serveur a été arrêté par le client")
                 server_stopped_event.set()
@@ -26,14 +31,19 @@ def handle_client_receive(client_socket):
         print(f"Erreur de connexion : {e}")
 
     finally:
+        # Ferme la connexion avec le client
         client_socket.close()
 
+# Fonction pour gérer l'envoi de messages au client
 def handle_client_send(client_socket):
     try:
         while True:
+            # Demande à l'utilisateur d'entrer une réponse pour envoyer au client
             server_response = input("Réponse du serveur : ")
+            # Envoie la réponse encodée en UTF-8 au client
             client_socket.send(server_response.encode('utf-8'))
 
+            # Si le serveur envoie "arret", le serveur s'arrête
             if server_response == "arret":
                 print("Le serveur a été arrêté par le client")
                 server_stopped_event.set()
@@ -43,40 +53,51 @@ def handle_client_send(client_socket):
         print(f"Erreur de connexion : {e}")
 
     finally:
+        # Ferme la connexion avec le client
         client_socket.close()
 
+# Fonction principale pour démarrer le serveur
 def start_server():
+    # Crée un socket serveur
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    host = '127.0.0.1'
-    port = 12347
+    host = '127.0.0.1'  # Adresse IP du serveur
+    port = 12347  # Port d'écoute du serveur
 
     try:
+        # Lie le socket à l'adresse et au port spécifiés
         server_socket.bind((host, port))
     except OSError as e:
         if e.errno == 10048:
+            # Si le port est déjà utilisé, affiche un message d'erreur
             print(f"Le port {port} est déjà utilisé. Assurez-vous qu'aucun autre programme n'utilise ce port.")
             exit()
         else:
             raise
 
+    # Ecoute jusqu'à 5 connexions en attente
     server_socket.listen(5)
     print(f"Le serveur écoute sur {host}:{port}")
 
+    # Continue à accepter les connexions clients tant que le serveur n'est pas arrêté
     while not server_stopped_event.is_set():
         print("En attente d'un client...")
+        # Accepte la connexion entrante d'un client
         client_socket, client_address = server_socket.accept()
         print(f"Connexion entrante de {client_address}")
 
+        # Crée deux threads pour gérer la réception et l'envoi de messages avec le client
         client_thread_receive = threading.Thread(target=handle_client_receive, args=(client_socket,))
         client_thread_send = threading.Thread(target=handle_client_send, args=(client_socket,))
         client_thread_receive.start()
         client_thread_send.start()
 
-        # Attendez que les threads se terminent avant de passer au client suivant
+        # Attend que les threads se terminent avant de passer au client suivant
         client_thread_receive.join()
         client_thread_send.join()
 
+    # Ferme le socket serveur lorsque le serveur s'arrête
     server_socket.close()
 
+# Point d'entrée du programme
 if __name__ == "__main__":
     start_server()
