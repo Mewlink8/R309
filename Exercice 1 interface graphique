@@ -1,4 +1,3 @@
-# Exercice1 des interfaces graphiques
 import sys
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QVBoxLayout, QPushButton
 
@@ -6,18 +5,21 @@ class MaApplication(QWidget):
     def __init__(self):
         super().__init__()
 
+        # Configurer la fenêtre principale
         self.setWindowTitle("Une première fenêtre")
         self.setGeometry(100, 100, 400, 200)
+
+        # Créer des widgets
         self.button_ok = QPushButton("Ok")
         self.button_ok.clicked.connect(self.on_button_ok_click)
-        self.result_label = QLabel("")
-        # Widget QLabel pour afficher du texte statique
-        label = QLabel("Saisir votre nom")
+
+        self.result_label = QLabel("")  # Widget QLabel pour afficher du texte statique
+        label = QLabel("Saisir votre nom")  # Widget QLabel pour afficher du texte statique
+
         self.button_quit = QPushButton("Quitter")
         self.button_quit.clicked.connect(self.close)
 
-        # Widget QLineEdit pour une zone de texte modifiable
-        self.text_edit = QLineEdit()
+        self.text_edit = QLineEdit()  # Widget QLineEdit pour une zone de texte modifiable
         self.text_edit.setPlaceholderText("")
 
         # Créer une disposition verticale
@@ -32,11 +34,12 @@ class MaApplication(QWidget):
         self.setLayout(layout)
 
     def on_button_ok_click(self):
+        # Obtenir le texte saisi et le mettre à jour dans le QLabel
         texte_saisi = self.text_edit.text()
         self.result_label.setText(f"Bonjour {texte_saisi}")
 
-
 if __name__ == '__main__':
+    # Créer et afficher l'application
     app = QApplication(sys.argv)
     fenetre = MaApplication()
     fenetre.show()
