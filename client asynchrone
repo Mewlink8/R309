@@ -4,6 +4,7 @@ import threading
 def receive_messages(client_socket):
     try:
         while True:
+            # Recevoir la réponse du serveur
             server_response = client_socket.recv(1024).decode('utf-8')
             if not server_response:
                 print("La connexion au serveur a été interrompue.")
@@ -19,20 +20,26 @@ def receive_messages(client_socket):
         print(f"Erreur de connexion : {e}")
 
     finally:
+        # Fermer le socket du client
         client_socket.close()
 
 def main():
+    # Créer un socket client
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_address = ('127.0.0.1', 12347)
 
     try:
+        # Connecter le client au serveur
         client_socket.connect(server_address)
 
+        # Démarrer un thread pour recevoir les messages du serveur en parallèle
         receive_thread = threading.Thread(target=receive_messages, args=(client_socket,))
         receive_thread.start()
 
         while True:
+            # Saisir le message du client
             client_message = input("Message du client : ")
+            # Envoyer le message au serveur
             client_socket.send(client_message.encode('utf-8'))
 
             if client_message in ["arret", "bye"]:
@@ -45,6 +52,7 @@ def main():
         print(f"Erreur de connexion : {e}")
 
     finally:
+        # Fermer le socket du client
         client_socket.close()
 
 if __name__ == "__main__":
