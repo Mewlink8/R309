@@ -1,0 +1,320 @@
+import sys
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QTextEdit, QWidget, QLineEdit, QPushButton, QDialog, QLabel
+from PyQt5.QtCore import QThread, pyqtSignal
+import socket
+import mysql.connector
+
+
+class AuthenticationWindow(QDialog):
+    def __init__(self):
+        super().__init__()
+
+        self.layout = QVBoxLayout()
+
+        self.username_label = QLabel("Identifiant:")
+        self.layout.addWidget(self.username_label)
+
+        self.username_input = QLineEdit()
+        self.layout.addWidget(self.username_input)
+
+        self.password_label = QLabel("Mot de passe:")
+        self.layout.addWidget(self.password_label)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.layout.addWidget(self.password_input)
+
+        self.error_label = QLabel()
+        self.error_label.setStyleSheet("color: red")
+        self.layout.addWidget(self.error_label)
+
+        self.login_button = QPushButton("Se connecter", self)
+        self.login_button.clicked.connect(self.authenticate)
+        self.layout.addWidget(self.login_button)
+
+        self.setLayout(self.layout)
+
+    def authenticate(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+
+        if username == "root" and password == "root":
+            self.accept()
+        else:
+            self.error_label.setText("Identifiant ou mot de passe incorrect.")
+
+
+class ClientHandler(QThread):
+    disconnected = pyqtSignal(tuple)
+
+    def __init__(self, client_socket, addr, server, username):
+        super().__init__()
+        self.client_socket = client_socket
+        self.addr = addr
+        self.server = server
+        self.username = username
+        self.current_channel = None  # Ajout de la variable pour suivre le canal actuel
+
+    def run(self):
+        try:
+            while True:
+                data = self.client_socket.recv(1024)
+                if not data:
+                    break
+                decoded_data = data.decode('utf-8')
+                if decoded_data.lower() == "bye":
+                    break
+                self.server.handle_client_message(decoded_data, self.username, self)
+        except Exception as e:
+            print(f"Erreur de réception : {e}")
+        finally:
+            self.client_socket.close()
+            self.disconnected.emit(self.addr)
+
+    def set_current_channel(self, channel_id):
+        self.current_channel = channel_id
+
+    def send_message(self, message):
+        try:
+            self.client_socket.sendall(message.encode('utf-8'))
+        except Exception as e:
+            print(f"Erreur lors de l'envoi du message au client {self.addr}: {e}")
+
+    def handle_client_message(self, message, username, client_handler):
+        sender_username, content = message.split(':', 1)
+        sender_username = sender_username.strip()
+
+        # Enregistrement du message uniquement si ce n'est pas un changement de canal
+        if not message.lower().startswith("changement de canal"):
+            current_channel_id = client_handler.current_channel
+            if current_channel_id is not None:
+                content = content.strip()
+                self.server.message_received.emit(f"{sender_username}: {content}")
+                self.server.insert_message(sender_username, current_channel_id, content)
+                self.server.broadcast_message(f"{sender_username}: {content}", self.addr)
+        else:
+            # Si c'est un "Changement de canal", mettez à jour le canal actuel du client
+            parts = message.split(":")
+            if len(parts) >= 2:
+                channel_name = parts[1].strip()
+                channel_id = self.server.CHANNEL_IDS.get(channel_name)
+                if channel_id is not None:
+                    client_handler.set_current_channel(channel_id)
+                    self.server.message_received.emit(f"{sender_username}: {message}")
+                    self.server.insert_message(sender_username, None, message)
+                    self.server.broadcast_message(f"{sender_username}: {message}", self.addr)
+                else:
+                    self.server.message_received.emit(f"Canal non trouvé : {channel_name}")
+            else:
+                self.server.message_received.emit(f"Commande de changement de canal mal formée : {message}")
+
+
+class Server(QThread):
+    client_connected = pyqtSignal(tuple)
+    message_received = pyqtSignal(str)
+    new_user_created = pyqtSignal(str)
+
+    CHANNEL_IDS = {
+        "Général": 1,
+        "Blabla": 2,
+        "Comptabilité": 3,
+        "Informatique": 4,
+        "Marketing": 5
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.auth_window = AuthenticationWindow()
+        if self.auth_window.exec() != QDialog.Accepted:
+            sys.exit(0)
+
+        self.db_connection = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="toto",
+            database="SAE302"
+        )
+        print("BDD bien connecté")
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind(('0.0.0.0', 5555))
+        self.server_socket.listen()
+        self.clients = []
+        self.window = ServerWindow(self)
+        self.window.stop_server_signal.connect(self.stop_server)
+        self.window.show()
+
+    def run(self):
+        try:
+            while True:
+                client_socket, addr = self.server_socket.accept()
+                self.client_connected.emit(addr)
+                self.message_received.emit(f"Connexion acceptée de {addr[0]}:{addr[1]}")
+
+                if self.verify_credentials(client_socket):
+                    username = "root"  # Utilisez le nom d'utilisateur fourni lors de l'authentification
+                    client_handler = ClientHandler(client_socket, addr, self, username)
+                    client_handler.set_current_channel(1)  # Spécifie le canal initial ici
+                    client_handler.disconnected.connect(self.handle_client_disconnected)
+                    client_handler.start()
+
+                    self.clients.append((client_handler, addr))
+
+                else:
+                    print(f"Identification échouée. Connexion refusée pour {addr[0]}:{addr[1]}")
+                    self.window.text_edit.append(f"Identification échouée. Connexion refusée pour {addr[0]}:{addr[1]}")
+
+        except Exception as e:
+            print(f"Erreur de connexion : {e}")
+
+    def stop_server(self):
+        self.window.set_status("Le serveur est arrêté.")
+        self.window.text_edit.append("Le serveur a été arrêté.")
+        self.server_socket.close()
+
+        for client_handler, _ in self.clients:
+            client_handler.client_socket.close()
+
+        self.wait()
+
+    def verify_credentials(self, client_socket):
+        try:
+            data = client_socket.recv(1024)
+            if not data:
+                return False
+
+            username, password = data.decode('utf-8').split(':')
+            print(f"username: {username}, password: {password}")
+
+            cursor = self.db_connection.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
+            result = cursor.fetchone()
+            cursor.close()
+
+            if result:
+                print(f"Identifiants valides pour {username}")
+            else:
+                print(f"Identifiants invalides pour {username}")
+
+            return result is not None
+
+        except Exception as e:
+            print(f"Erreur lors de la vérification des identifiants : {e}")
+            return False
+
+    def handle_client_message(self, message, username, client_handler):
+        sender_username, content = message.split(':', 1)
+        sender_username = sender_username.strip()
+
+        # Enregistrement du message uniquement si ce n'est pas un changement de canal
+        if not message.lower().startswith("changement de canal"):
+            current_channel_id = client_handler.current_channel
+            if current_channel_id is not None:
+                content = content.strip()
+                self.message_received.emit(f"{sender_username}: {content}")
+                self.insert_message(sender_username, current_channel_id, content)
+                self.broadcast_message(f"{sender_username}: {content}", client_handler.addr)
+        else:
+            # Si c'est un "Changement de canal", mettez à jour le canal actuel du client
+            parts = message.split(":")
+            if len(parts) >= 2:
+                channel_name = parts[1].strip()
+                channel_id = self.CHANNEL_IDS.get(channel_name)
+                if channel_id is not None:
+                    client_handler.set_current_channel(channel_id)
+                    self.message_received.emit(f"{sender_username}: {message}")
+                    self.insert_message(sender_username, None, message)
+                    self.broadcast_message(f"{sender_username}: {message}", client_handler.addr)
+                else:
+                    self.message_received.emit(f"Canal non trouvé : {channel_name}")
+            else:
+                self.message_received.emit(f"Commande de changement de canal mal formée : {message}")
+
+    def insert_message(self, username, channel_id, content):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("INSERT INTO messages (username, channel_id, content) VALUES (%s, %s, %s)",
+                           (username, channel_id, content))
+            self.db_connection.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"Erreur lors de l'insertion du message dans la base de données : {e}")
+
+    def broadcast_message(self, message, sender_addr):
+        # Exclure les messages "Changement de canal"
+        if "Changement de canal" not in message:
+            for client_handler, addr in self.clients:
+                if addr != sender_addr:
+                    try:
+                        client_handler.client_socket.sendall(message.encode('utf-8'))
+                    except Exception as e:
+                        print(f"Erreur lors de l'envoi du message au client {addr}: {e}")
+
+    def handle_client_disconnected(self, addr):
+        for client_handler, client_addr in self.clients:
+            if client_addr == addr:
+                self.clients.remove((client_handler, client_addr))
+                self.message_received.emit(f"Client déconnecté : {addr[0]}:{addr[1]}")
+                self.window.text_edit.append(f"Client déconnecté : {addr[0]}:{addr[1]}")
+
+
+class ServerWindow(QMainWindow):
+    stop_server_signal = pyqtSignal()
+
+    def __init__(self, server):
+        super().__init__()
+
+        self.server = server
+
+        self.setWindowTitle("Serveur")
+        self.setGeometry(100, 100, 600, 400)
+
+        self.central_widget = QWidget(self)
+        self.setCentralWidget(self.central_widget)
+
+        self.layout = QVBoxLayout()
+
+        self.text_edit = QTextEdit(self)
+        self.layout.addWidget(self.text_edit)
+
+        self.input_line = QLineEdit(self)
+        self.layout.addWidget(self.input_line)
+
+        self.send_button = QPushButton("Envoyer", self)
+        self.send_button.clicked.connect(self.send_message)
+        self.layout.addWidget(self.send_button)
+
+        self.stop_button = QPushButton("Arrêter le serveur", self)
+        self.stop_button.clicked.connect(self.stop_server)
+        self.layout.addWidget(self.stop_button)
+
+        self.central_widget.setLayout(self.layout)
+
+        self.server.message_received.connect(self.handle_message_received)
+        self.server.client_connected.connect(self.handle_client_connected)
+        self.server.new_user_created.connect(self.handle_new_user_created)
+
+        self.server.start()
+
+    def stop_server(self):
+        self.stop_server_signal.emit()
+
+    def send_message(self):
+        self.server.broadcast_message(f"Server: {self.input_line.text()}", None)
+        self.input_line.clear()
+
+    def handle_message_received(self, message):
+        self.text_edit.append(message)
+
+    def handle_client_connected(self, addr):
+        self.text_edit.append(f"Client connecté : {addr[0]}:{addr[1]}")
+
+    def handle_new_user_created(self, message):
+        print("Handling new user creation:", message)
+        self.message_received.emit(message)
+        self.handle_new_user_request(message)
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    server = Server()
+    sys.exit(app.exec_())
