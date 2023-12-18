@@ -1,0 +1,277 @@
+import sys
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QWidget, QDialog, QLabel, QComboBox
+from PyQt6.QtCore import QThread, pyqtSignal
+import socket
+
+class ClientReceiver(QThread):
+    message_received = pyqtSignal(str)
+    client_disconnected = pyqtSignal()
+
+    def __init__(self, client_socket, username):
+        super().__init__()
+        self.client_socket = client_socket
+        self.username = username
+
+    def run(self):
+        try:
+            while True:
+                data = self.client_socket.recv(1024)
+                if not data:
+                    break
+                decoded_data = data.decode('utf-8')
+                self.message_received.emit(decoded_data)
+
+                if decoded_data.lower() == "bye":
+                    break
+        except Exception as e:
+            print(f"Erreur de réception : {e}")
+        finally:
+            self.client_disconnected.emit()
+
+class NewUserPage(QDialog):
+    user_created = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+
+        self.layout = QVBoxLayout()
+
+        self.username_label = QLabel("Nom d'utilisateur:")
+        self.layout.addWidget(self.username_label)
+
+        self.username_input = QLineEdit()
+        self.layout.addWidget(self.username_input)
+
+        self.pseudo_label = QLabel("Pseudo:")
+        self.layout.addWidget(self.pseudo_label)
+
+        self.pseudo_input = QLineEdit()
+        self.layout.addWidget(self.pseudo_input)
+
+        self.password_label = QLabel("Mot de passe:")
+        self.layout.addWidget(self.password_label)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.layout.addWidget(self.password_input)
+
+        self.confirm_password_label = QLabel("Confirmer le mot de passe:")
+        self.layout.addWidget(self.confirm_password_label)
+
+        self.confirm_password_input = QLineEdit()
+        self.confirm_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.layout.addWidget(self.confirm_password_input)
+
+        # Bouton pour afficher/cacher le mot de passe
+        self.show_password_button = QPushButton("Afficher le mot de passe")
+        self.show_password_button.setCheckable(True)
+        self.show_password_button.clicked.connect(self.toggle_password_visibility)
+        self.layout.addWidget(self.show_password_button)
+
+        self.error_label = QLabel()
+        self.error_label.setStyleSheet("color: red")
+        self.layout.addWidget(self.error_label)
+
+        self.create_user_button = QPushButton("Créer un nouvel utilisateur")
+        self.create_user_button.clicked.connect(self.create_user)
+        self.layout.addWidget(self.create_user_button)
+
+        self.setLayout(self.layout)
+
+    def toggle_password_visibility(self):
+        is_checked = self.show_password_button.isChecked()
+        self.password_input.setEchoMode(
+            QLineEdit.EchoMode.Normal if is_checked else QLineEdit.EchoMode.Password
+        )
+        self.confirm_password_input.setEchoMode(
+            QLineEdit.EchoMode.Normal if is_checked else QLineEdit.EchoMode.Password
+        )
+        self.show_password_button.setText("Cacher le mot de passe" if is_checked else "Afficher le mot de passe")
+
+    def create_user(self):
+        username = self.username_input.text()
+        pseudo = self.pseudo_input.text()
+        password = self.password_input.text()
+        confirm_password = self.confirm_password_input.text()
+
+        if not username or not pseudo or not password or not confirm_password:
+            self.error_label.setText("Veuillez remplir tous les champs.")
+            return
+
+        if password != confirm_password:
+            self.error_label.setText("Les mots de passe ne correspondent pas.")
+            return
+
+        # Envoyer les informations du nouvel utilisateur au serveur
+        user_info = f"création d'utilisateur demandée:{username}:{pseudo}:{password}"
+        self.user_created.emit(user_info)
+        self.accept()
+
+class LoginPage(QDialog):
+    def __init__(self):
+        super().__init__()
+
+        self.new_user_page = None
+
+        self.layout = QVBoxLayout()
+
+        self.username_label = QLabel("Nom d'utilisateur:")
+        self.layout.addWidget(self.username_label)
+
+        self.username_input = QLineEdit()
+        self.layout.addWidget(self.username_input)
+
+        self.password_label = QLabel("Mot de passe:")
+        self.layout.addWidget(self.password_label)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.layout.addWidget(self.password_input)
+
+        # Bouton pour afficher/cacher le mot de passe
+        self.show_password_button = QPushButton("Afficher le mot de passe")
+        self.show_password_button.setCheckable(True)
+        self.show_password_button.clicked.connect(self.toggle_password_visibility)
+        self.layout.addWidget(self.show_password_button)
+
+        self.error_label = QLabel()
+        self.error_label.setStyleSheet("color: red")
+        self.layout.addWidget(self.error_label)
+
+        self.login_button = QPushButton("Se connecter")
+        self.login_button.clicked.connect(self.login)
+        self.layout.addWidget(self.login_button)
+
+        # Bouton pour créer un nouvel utilisateur
+        self.new_user_button = QPushButton("Nouvel utilisateur")
+        self.new_user_button.clicked.connect(self.show_new_user_page)
+        self.layout.addWidget(self.new_user_button)
+
+        self.setLayout(self.layout)
+
+    def toggle_password_visibility(self):
+        is_checked = self.show_password_button.isChecked()
+        self.password_input.setEchoMode(
+            QLineEdit.EchoMode.Normal if is_checked else QLineEdit.EchoMode.Password
+        )
+        self.show_password_button.setText("Cacher le mot de passe" if is_checked else "Afficher le mot de passe")
+
+    def login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+
+        if not username or not password:
+            self.error_label.setText("Veuillez entrer un nom d'utilisateur et un mot de passe.")
+            return
+
+        # Fermer la page de connexion et passer les informations d'identification à la fenêtre principale
+        self.accept()
+
+    def show_new_user_page(self):
+        self.new_user_page = NewUserPage()
+        self.new_user_page.user_created.connect(self.send_new_user_info)
+        if self.new_user_page.exec() == QDialog.DialogCode.Accepted:
+            print("Nouvel utilisateur créé.")
+
+    def send_new_user_info(self, user_info):
+        # Envoyer les informations du nouvel utilisateur au serveur
+        print(f"Sending user info to server: {user_info}")
+
+class ClientGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.login_page = LoginPage()
+        if self.login_page.exec() != QDialog.DialogCode.Accepted:
+            sys.exit(0)
+
+        self.init_ui()
+        self.init_socket()
+
+    def init_ui(self):
+        self.setWindowTitle(f"Client - {self.login_page.username_input.text()}")
+        self.setGeometry(100, 100, 400, 300)
+
+        self.central_widget = QWidget(self)
+        self.setCentralWidget(self.central_widget)
+
+        self.layout = QVBoxLayout()
+
+        self.text_edit = QTextEdit(self)
+        self.layout.addWidget(self.text_edit)
+
+        self.input_line = QLineEdit(self)
+        self.layout.addWidget(self.input_line)
+
+        self.send_button = QPushButton("Envoyer", self)
+        self.send_button.clicked.connect(self.send_message)
+        self.layout.addWidget(self.send_button)
+
+        # Ajout de la liste déroulante pour les canaux
+        self.channel_combo = QComboBox(self)
+        self.channel_combo.addItems(['Général', 'Blabla', 'Comptabilité', 'Informatique', 'Marketing'])
+        self.layout.addWidget(self.channel_combo)
+
+        # Ajout du bouton pour changer le canal
+        self.change_channel_button = QPushButton("Changer le canal", self)
+        self.change_channel_button.clicked.connect(self.change_channel)
+        self.layout.addWidget(self.change_channel_button)
+
+        # Ajout du bouton de déconnexion
+        self.disconnect_button = QPushButton("Déconnexion", self)
+        self.disconnect_button.clicked.connect(self.disconnect)
+        self.layout.addWidget(self.disconnect_button)
+
+        self.central_widget.setLayout(self.layout)
+
+    def disconnect(self):
+        # Fermer la connexion et revenir à la fenêtre de connexion
+        self.client_socket.sendall("bye".encode('utf-8'))
+        self.client_socket.close()
+        self.login_page.show()
+
+    def init_socket(self):
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_socket.connect(('127.0.0.8', 5555))
+
+        # Envoyer les informations d'identification au serveur
+        username = self.login_page.username_input.text()
+        password = self.login_page.password_input.text()
+        credentials = f"{username}:{password}"
+        self.client_socket.sendall(credentials.encode('utf-8'))
+
+        self.client_receiver = ClientReceiver(self.client_socket, username)
+        self.client_receiver.message_received.connect(self.handle_message)
+        self.client_receiver.client_disconnected.connect(self.handle_client_disconnected)
+        self.client_receiver.start()
+
+    def handle_message(self, message):
+        sender_username, content = message.split(':', 1)
+        sender_username = sender_username.strip()
+
+        # Vérifiez si le message provient de l'utilisateur actuel
+        if sender_username == self.login_page.username_input.text():
+            # Si c'est le cas, n'affichez pas le nom d'utilisateur
+            self.text_edit.append(f"{content}")
+        else:
+            self.text_edit.append(f"{sender_username}: {content}")
+
+    def handle_client_disconnected(self):
+        print("Le client a été déconnecté.")
+        sys.exit(0)
+
+    def send_message(self):
+        message = self.input_line.text()
+        self.client_socket.sendall(f"{self.client_receiver.username}: {message}".encode('utf-8'))
+        self.input_line.clear()
+
+    def change_channel(self):
+        selected_channel = self.channel_combo.currentText()
+        self.client_socket.sendall(f"Changement de canal : {selected_channel}".encode('utf-8'))
+        # Vous pouvez ajouter d'autres actions nécessaires lors du changement de canal
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    client_gui = ClientGUI()
+    client_gui.show()
+    sys.exit(app.exec())
