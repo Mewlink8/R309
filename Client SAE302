@@ -29,8 +29,6 @@ class ClientReceiver(QThread):
             self.client_disconnected.emit()
 
 class NewUserPage(QDialog):
-    user_created = pyqtSignal(str)
-
     def __init__(self):
         super().__init__()
 
@@ -103,15 +101,16 @@ class NewUserPage(QDialog):
             return
 
         # Envoyer les informations du nouvel utilisateur au serveur
-        user_info = f"création d'utilisateur demandée:{username}:{pseudo}:{password}"
-        self.user_created.emit(user_info)
+        user_info = f"création_utilisateur:{username}:{pseudo}:{password}"
         self.accept()
 
 class LoginPage(QDialog):
-    def __init__(self):
+    def __init__(self, client_socket):
         super().__init__()
 
+        self.client_socket = client_socket
         self.new_user_page = None
+
 
         self.layout = QVBoxLayout()
 
@@ -169,19 +168,47 @@ class LoginPage(QDialog):
 
     def show_new_user_page(self):
         self.new_user_page = NewUserPage()
-        self.new_user_page.user_created.connect(self.send_new_user_info)
-        if self.new_user_page.exec() == QDialog.DialogCode.Accepted:
-            print("Nouvel utilisateur créé.")
+        self.new_user_page.accepted.connect(self.send_new_user_info)
+        self.new_user_page.exec()
 
-    def send_new_user_info(self, user_info):
-        # Envoyer les informations du nouvel utilisateur au serveur
-        print(f"Sending user info to server: {user_info}")
+    def send_new_user_info(self):
+        # Récupérer les informations depuis la NewUserPage
+        username = self.new_user_page.username_input.text()
+        pseudo = self.new_user_page.pseudo_input.text()
+        password = self.new_user_page.password_input.text()
+
+        if not username or not pseudo or not password:
+            self.error_label.setText("Veuillez remplir tous les champs.")
+            return
+
+        if self.new_user_page.password_input.text() != password:
+            self.error_label.setText("Les mots de passe ne correspondent pas.")
+            return
+
+        # Vérifier que self.client_socket est initialisé avant d'envoyer les informations
+        if self.client_socket:
+            # Envoyer les informations du nouvel utilisateur au serveur
+            user_info = f"création_utilisateur:{username}:{pseudo}:{password}"
+
+            try:
+                # Ajoutez la ligne suivante pour envoyer les informations au serveur
+                self.client_socket.sendall(user_info.encode('utf-8'))
+            except Exception as e:
+                print(f"Erreur lors de l'envoi des informations au serveur : {e}")
+
+            print("Avant self.new_user_page.accept()")
+            # Commentez ou supprimez la ligne suivante pour éviter le plantage
+            # self.new_user_page.accept()
+            print("Après self.new_user_page.accept()")
 
 class ClientGUI(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.login_page = LoginPage()
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client_socket.connect(('127.0.0.2', 5555))
+
+        self.login_page = LoginPage(self.client_socket)
         if self.login_page.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
 
@@ -232,13 +259,16 @@ class ClientGUI(QMainWindow):
 
     def init_socket(self):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect(('127.0.0.8', 5555))
+        self.client_socket.connect(('127.0.0.2', 5555))
 
         # Envoyer les informations d'identification au serveur
         username = self.login_page.username_input.text()
         password = self.login_page.password_input.text()
         credentials = f"{username}:{password}"
         self.client_socket.sendall(credentials.encode('utf-8'))
+
+        # Passer le client_socket à la LoginPage lors de sa création
+        self.login_page = LoginPage(self.client_socket)
 
         self.client_receiver = ClientReceiver(self.client_socket, username)
         self.client_receiver.message_received.connect(self.handle_message)
