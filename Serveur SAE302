@@ -64,7 +64,10 @@ class ClientHandler(QThread):
                 decoded_data = data.decode('utf-8')
                 if decoded_data.lower() == "bye":
                     break
+
+                # Utilisez directement la méthode du serveur
                 self.server.handle_client_message(decoded_data, self.username, self)
+
         except Exception as e:
             print(f"Erreur de réception : {e}")
         finally:
@@ -166,6 +169,66 @@ class Server(QThread):
         except Exception as e:
             print(f"Erreur de connexion : {e}")
 
+    def authenticate(self, client_socket):
+        try:
+            data = client_socket.recv(1024)
+            if not data:
+                return False
+
+            credentials = data.decode('utf-8').split(':')
+            action = credentials[0]
+
+            if action == "création_utilisateur":
+                return self.handle_user_creation(client_socket, credentials)
+            elif action == "connexion":
+                return self.handle_user_authentication(credentials)
+            else:
+                print(f"Action non reconnue : {action}")
+                return False
+
+        except Exception as e:
+            print(f"Erreur lors de l'authentification : {e}")
+            return False
+
+    def handle_user_creation(self, client_socket, credentials):
+        try:
+            # Création d'un nouvel utilisateur
+            username, pseudo, password = credentials[1], credentials[2], credentials[3]
+
+            # Insérer le nouvel utilisateur dans la base de données
+            if self.insert_new_user(username, pseudo, password):
+                # Informer que le nouvel utilisateur a été créé
+                self.new_user_created.emit(f"Nouvel utilisateur créé: {username}")
+                return True
+            else:
+                print(f"Erreur lors de la création du nouvel utilisateur : {username}")
+                return False
+
+        except Exception as e:
+            print(f"Erreur lors de la gestion de la création d'utilisateur : {e}")
+            return False
+
+    def handle_user_authentication(self, credentials):
+        try:
+            # Vérification des identifiants pour la connexion
+            username, password = credentials[1], credentials[2]
+
+            cursor = self.db_connection.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
+            result = cursor.fetchone()
+            cursor.close()
+
+            if result:
+                print(f"Identifiants valides pour {username}")
+            else:
+                print(f"Identifiants invalides pour {username}")
+
+            return result is not None
+
+        except Exception as e:
+            print(f"Erreur lors de la vérification des identifiants : {e}")
+            return False
+
     def stop_server(self):
         self.window.set_status("Le serveur est arrêté.")
         self.window.text_edit.append("Le serveur a été arrêté.")
@@ -182,23 +245,49 @@ class Server(QThread):
             if not data:
                 return False
 
-            username, password = data.decode('utf-8').split(':')
-            print(f"username: {username}, password: {password}")
+            credentials = data.decode('utf-8').split(':')
+            if credentials[0] == "création_utilisateur":
+                # Création d'un nouvel utilisateur
+                username, pseudo, password = credentials[1], credentials[2], credentials[3]
 
-            cursor = self.db_connection.cursor()
-            cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
-            result = cursor.fetchone()
-            cursor.close()
-
-            if result:
-                print(f"Identifiants valides pour {username}")
+                # Insérer le nouvel utilisateur dans la base de données
+                if self.insert_new_user(username, pseudo, password):
+                    # Informer que le nouvel utilisateur a été créé
+                    self.new_user_created.emit(f"Nouvel utilisateur créé: {username}")
+                    return True
+                else:
+                    print(f"Erreur lors de la création du nouvel utilisateur : {username}")
+                    return False
             else:
-                print(f"Identifiants invalides pour {username}")
+                # Vérification des identifiants pour la connexion
+                username, password = credentials[0], credentials[1]
 
-            return result is not None
+                cursor = self.db_connection.cursor()
+                cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
+                result = cursor.fetchone()
+                cursor.close()
+
+                if result:
+                    print(f"Identifiants valides pour {username}")
+                else:
+                    print(f"Identifiants invalides pour {username}")
+
+                return result is not None
 
         except Exception as e:
             print(f"Erreur lors de la vérification des identifiants : {e}")
+            return False
+
+    def insert_new_user(self, username, pseudo, password):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("INSERT INTO users (username, pseudo, password) VALUES (%s, %s, %s)",
+                           (username, pseudo, password))
+            self.db_connection.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            print(f"Erreur lors de l'insertion du nouvel utilisateur dans la base de données : {e}")
             return False
 
     def handle_client_message(self, message, username, client_handler):
@@ -310,8 +399,8 @@ class ServerWindow(QMainWindow):
 
     def handle_new_user_created(self, message):
         print("Handling new user creation:", message)
-        self.message_received.emit(message)
-        self.handle_new_user_request(message)
+        self.text_edit.append(message)
+        # Ajoutez ici le code pour traiter la création d'un nouvel utilisateur, si nécessaire
 
 
 if __name__ == '__main__':
