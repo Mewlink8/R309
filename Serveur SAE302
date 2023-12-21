@@ -1,8 +1,9 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QTextEdit, QWidget, QLineEdit, QPushButton, QDialog, QLabel
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import *
 import socket
 import mysql.connector
+import datetime
 
 
 class AuthenticationWindow(QDialog):
@@ -87,6 +88,10 @@ class ClientHandler(QThread):
         sender_username, content = message.split(':', 1)
         sender_username = sender_username.strip()
 
+        if self.is_user_banned(username):
+            self.server.message_received.emit(f"{username} est banni et ne peut pas envoyer de messages.")
+            return
+
         # Enregistrement du message uniquement si ce n'est pas un changement de canal
         if not message.lower().startswith("changement de canal"):
             current_channel_id = client_handler.current_channel
@@ -110,6 +115,18 @@ class ClientHandler(QThread):
                     self.server.message_received.emit(f"Canal non trouvé : {channel_name}")
             else:
                 self.server.message_received.emit(f"Commande de changement de canal mal formée : {message}")
+
+    def is_user_banned(self, username):
+        try:
+            cursor = self.server.db_connection.cursor()
+            cursor.execute("SELECT ban_expire FROM users WHERE username = %s", (username,))
+            ban_expire = cursor.fetchone()[0]
+            cursor.close()
+            return ban_expire is not None and ban_expire > datetime.datetime.now()
+
+        except Exception as e:
+            print(f"Erreur lors de la vérification du statut de ban pour {username} : {e}")
+            return False
 
 
 class Server(QThread):
@@ -145,6 +162,9 @@ class Server(QThread):
         self.window = ServerWindow(self)
         self.window.stop_server_signal.connect(self.stop_server)
         self.window.show()
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.check_user_timeouts)
+        self.timer.start(60000)  # Vérifier toutes les 60 secondes (ajustez selon vos besoins)
 
     def run(self):
         try:
@@ -214,7 +234,8 @@ class Server(QThread):
             username, password = credentials[1], credentials[2]
 
             cursor = self.db_connection.cursor()
-            cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
+            cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s AND ban = 0",
+                           (username, password))
             result = cursor.fetchone()
             cursor.close()
 
@@ -263,14 +284,15 @@ class Server(QThread):
                 username, password = credentials[0], credentials[1]
 
                 cursor = self.db_connection.cursor()
-                cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
+                cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s AND ban = 0",
+                               (username, password))
                 result = cursor.fetchone()
                 cursor.close()
 
                 if result:
                     print(f"Identifiants valides pour {username}")
                 else:
-                    print(f"Identifiants invalides pour {username}")
+                    print(f"Identifiants invalides ou utilisateur banni pour {username}")
 
                 return result is not None
 
@@ -345,6 +367,89 @@ class Server(QThread):
                 self.message_received.emit(f"Client déconnecté : {addr[0]}:{addr[1]}")
                 self.window.text_edit.append(f"Client déconnecté : {addr[0]}:{addr[1]}")
 
+    def kick_user(self, username, kick_expire):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("UPDATE users SET kick_expire = %s, ban = 1 WHERE username = %s", (kick_expire, username))
+            self.db_connection.commit()
+            cursor.close()
+            self.broadcast_message(f"{username} a été kické jusqu'au {kick_expire}.", None)
+        except Exception as e:
+            print(f"Erreur lors du Kick de l'utilisateur {username} : {e}")
+
+    def ban_user(self, username, ban_expire):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("UPDATE users SET ban_expire = %s, ban = 1 WHERE username = %s", (ban_expire, username))
+            self.db_connection.commit()
+            cursor.close()
+            self.broadcast_message(f"{username} a été banni jusqu'au {ban_expire}.", None)
+        except Exception as e:
+            print(f"Erreur lors du Ban de l'utilisateur {username} : {e}")
+
+    def unban_user(self, username):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("UPDATE users SET ban_expire = NULL, ban = 0 WHERE username = %s", (username,))
+            self.db_connection.commit()
+            cursor.close()
+            self.broadcast_message(f"{username} n'est plus banni.", None)
+        except Exception as e:
+            print(f"Erreur lors de la suppression du Ban de l'utilisateur {username} : {e}")
+
+    def unkick_user(self, username):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("UPDATE users SET kick_expire = NULL, ban = 0 WHERE username = %s", (username,))
+            self.db_connection.commit()
+            cursor.close()
+            self.broadcast_message(f"{username} n'est plus kické.", None)
+        except Exception as e:
+            print(f"Erreur lors de la suppression du Kick de l'utilisateur {username} : {e}")
+
+    def check_user_timeouts(self):
+        try:
+            cursor = self.db_connection.cursor(dictionary=True)
+            cursor.execute("SELECT username, kick_expire, ban_expire FROM users WHERE kick_expire IS NOT NULL OR ban_expire IS NOT NULL")
+            users = cursor.fetchall()
+            cursor.close()
+
+            current_datetime = datetime.datetime.now()
+
+            for user in users:
+                username = user["username"]
+                kick_expire = user["kick_expire"]
+                ban_expire = user["ban_expire"]
+
+                if kick_expire is not None and kick_expire < current_datetime:
+                    # Réinitialiser la colonne kick_expire à zéro
+                    self.reset_kick_expire(username)
+
+                if ban_expire is not None and ban_expire < current_datetime:
+                    # Réinitialiser les colonnes ban_expire à zéro
+                    self.reset_ban_expire(username)
+
+        except Exception as e:
+            print(f"Erreur lors de la vérification des délais d'expiration : {e}")
+
+    def reset_kick_expire(self, username):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("UPDATE users SET kick_expire = NULL, ban = 0 WHERE username = %s", (username,))
+            self.db_connection.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"Erreur lors de la suppression du Kick de l'utilisateur {username} : {e}")
+
+    def reset_ban_expire(self, username):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("UPDATE users SET ban_expire = NULL, ban = 0 WHERE username = %s", (username,))
+            self.db_connection.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"Erreur lors de la suppression du Ban de l'utilisateur {username} : {e}")
+
 
 class ServerWindow(QMainWindow):
     stop_server_signal = pyqtSignal()
@@ -378,9 +483,40 @@ class ServerWindow(QMainWindow):
 
         self.central_widget.setLayout(self.layout)
 
+        self.setup_ui()
+
         self.server.message_received.connect(self.handle_message_received)
         self.server.client_connected.connect(self.handle_client_connected)
         self.server.new_user_created.connect(self.handle_new_user_created)
+
+        self.kick_button = QPushButton("Kick", self)
+        self.kick_button.clicked.connect(self.kick_user)
+        self.layout.addWidget(self.kick_button)
+
+        self.ban_button = QPushButton("Ban", self)
+        self.ban_button.clicked.connect(self.ban_user)
+        self.layout.addWidget(self.ban_button)
+
+        self.unban_button = QPushButton("Supprimer le Ban", self)
+        self.unban_button.clicked.connect(self.unban_user)
+        self.layout.addWidget(self.unban_button)
+
+        self.unkick_button = QPushButton("Enlever le Kick", self)
+        self.unkick_button.clicked.connect(self.unkick_user)
+        self.layout.addWidget(self.unkick_button)
+
+        self.kick_button = QPushButton("Pour Kick", self)
+        self.layout.addWidget(self.kick_button)
+
+        self.kick_datetime_edit = QDateTimeEdit(self)
+        self.layout.addWidget(self.kick_datetime_edit)
+
+        self.ban_button = QPushButton("Pour Ban", self)
+        self.layout.addWidget(self.ban_button)
+
+        self.ban_datetime_edit = QDateTimeEdit(self)
+        self.layout.addWidget(self.ban_datetime_edit)
+
 
         self.server.start()
 
@@ -402,6 +538,58 @@ class ServerWindow(QMainWindow):
         self.text_edit.append(message)
         # Ajoutez ici le code pour traiter la création d'un nouvel utilisateur, si nécessaire
 
+    def kick_user(self):
+        username = self.get_selected_username()
+        if username:
+            # Utilisez la valeur sélectionnée dans le QDateTimeEdit
+            kick_expire = self.kick_datetime_edit.dateTime().toPyDateTime()
+            self.server.kick_user(username, kick_expire)
+
+    def ban_user(self):
+        username = self.get_selected_username()
+        if username:
+            ban_expire = self.ban_datetime_edit.dateTime().toPyDateTime()
+            self.server.ban_user(username, ban_expire)
+
+    def unban_user(self):
+        username = self.get_selected_username()
+        if username:
+            self.server.unban_user(username)
+
+    def unkick_user(self):
+        username = self.get_selected_username()
+        if username:
+            self.server.unkick_user(username)
+
+    def get_selected_username(self):
+        index = self.user_combo.currentIndex()
+        if index > 0:
+            return self.user_combo.currentText()
+        return None
+
+    def setup_ui(self):
+
+        # Créer un menu déroulant pour les utilisateurs
+        self.user_combo = QComboBox(self)
+        self.layout.addWidget(self.user_combo)
+
+        # Charger les utilisateurs depuis la base de données
+        self.load_users()
+
+    def load_users(self):
+        try:
+            cursor = self.server.db_connection.cursor(dictionary=True)
+            cursor.execute("SELECT username FROM users")
+            users = cursor.fetchall()
+            cursor.close()
+
+            # Ajouter les utilisateurs au menu déroulant
+            self.user_combo.addItem("Sélectionner un utilisateur")
+            for user in users:
+                self.user_combo.addItem(user["username"])
+
+        except Exception as e:
+            print(f"Erreur lors du chargement des utilisateurs : {e}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
