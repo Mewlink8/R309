@@ -1,16 +1,20 @@
 import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QWidget, QDialog, QLabel, QComboBox
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import *
 import socket
 
 class ClientReceiver(QThread):
     message_received = pyqtSignal(str)
     client_disconnected = pyqtSignal()
+    channel_change_requested = pyqtSignal(str)
+    channel_request_response = pyqtSignal(str)
 
-    def __init__(self, client_socket, username):
+    def __init__(self, client_socket, username, channel_list):
         super().__init__()
         self.client_socket = client_socket
         self.username = username
+        self.channel_list = channel_list
+        self.pending_channel_requests = set()
 
     def run(self):
         try:
@@ -23,6 +27,12 @@ class ClientReceiver(QThread):
 
                 if decoded_data.lower() == "bye":
                     break
+                elif decoded_data.startswith("Demande de canal :"):
+                    channel_requested = decoded_data.split(":")[1].strip()
+                    self.channel_change_requested.emit(channel_requested)
+                elif decoded_data.startswith("Réponse demande canal :"):
+                    response_info = decoded_data.split(":")[1].strip()
+                    self.channel_request_response.emit(response_info)
         except Exception as e:
             print(f"Erreur de réception : {e}")
         finally:
@@ -208,6 +218,9 @@ class ClientGUI(QMainWindow):
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket.connect(('127.0.0.2', 5555))
 
+        self.channel_list = ['Général']
+        self.pending_channel_requests = set()
+
         self.login_page = LoginPage(self.client_socket)
         if self.login_page.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
@@ -239,8 +252,13 @@ class ClientGUI(QMainWindow):
         self.channel_combo.addItems(['Général', 'Blabla', 'Comptabilité', 'Informatique', 'Marketing'])
         self.layout.addWidget(self.channel_combo)
 
-        # Ajout du bouton pour changer le canal
-        self.change_channel_button = QPushButton("Changer le canal", self)
+        # Bouton pour demander à rejoindre un canal
+        self.join_channel_button = QPushButton("Demander à rejoindre un canal", self)
+        self.join_channel_button.clicked.connect(self.join_channel)
+        self.layout.addWidget(self.join_channel_button)
+
+        # Bouton pour changer de canal
+        self.change_channel_button = QPushButton("Changer de canal", self)
         self.change_channel_button.clicked.connect(self.change_channel)
         self.layout.addWidget(self.change_channel_button)
 
@@ -270,9 +288,10 @@ class ClientGUI(QMainWindow):
         # Passer le client_socket à la LoginPage lors de sa création
         self.login_page = LoginPage(self.client_socket)
 
-        self.client_receiver = ClientReceiver(self.client_socket, username)
+        self.client_receiver = ClientReceiver(self.client_socket, username, self.channel_list)
         self.client_receiver.message_received.connect(self.handle_message)
         self.client_receiver.client_disconnected.connect(self.handle_client_disconnected)
+        self.client_receiver.channel_change_requested.connect(self.handle_channel_request)
         self.client_receiver.start()
 
     def handle_message(self, message):
@@ -295,10 +314,33 @@ class ClientGUI(QMainWindow):
         self.client_socket.sendall(f"{self.client_receiver.username}: {message}".encode('utf-8'))
         self.input_line.clear()
 
+    def join_channel(self):
+        selected_channel = self.channel_combo.currentText()
+        self.client_socket.sendall(
+            f"{self.client_receiver.username} : Demande de canal : {selected_channel}".encode('utf-8'))
+
     def change_channel(self):
         selected_channel = self.channel_combo.currentText()
         self.client_socket.sendall(f"Changement de canal : {selected_channel}".encode('utf-8'))
         # Vous pouvez ajouter d'autres actions nécessaires lors du changement de canal
+
+    def handle_channel_request(self, channel_requested):
+        response = QMessageBox.question(self, "Demande de canal",
+                                        f"Voulez-vous autoriser l'accès au canal {channel_requested} ?",
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        response_info = f"Réponse demande canal : {channel_requested} : {'Autorisé' if response == QMessageBox.StandardButton.Yes else 'Refusé'}"
+        self.client_socket.sendall(response_info.encode('utf-8'))
+
+        if response == QMessageBox.StandardButton.Yes:
+            self.channel_list.append(channel_requested)
+            self.pending_channel_requests.remove(channel_requested)
+
+    def handle_join_channel_request(self, channel_requested):
+        response = QMessageBox.question(self, "Demande de canal",
+                                        f"Voulez-vous autoriser l'accès au canal {channel_requested} ?",
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        response_info = f"Réponse demande canal : {channel_requested} : {'Autorisé' if response == QMessageBox.StandardButton.Yes else 'Refusé'}"
+        self.client_socket.sendall(response_info.encode('utf-8'))
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
