@@ -4,6 +4,7 @@ from PyQt5.QtCore import *
 import socket
 import mysql.connector
 import datetime
+from enum import Enum
 
 
 class AuthenticationWindow(QDialog):
@@ -84,17 +85,16 @@ class ClientHandler(QThread):
         except Exception as e:
             print(f"Erreur lors de l'envoi du message au client {self.addr}: {e}")
 
-    def handle_client_message(self, message, username, client_handler):
-        sender_username, content = message.split(':', 1)
-        sender_username = sender_username.strip()
+    def handle_client_message(self, message):
+        sender_username, content = self.extract_username_and_content(message)
 
-        if self.is_user_banned(username):
-            self.server.message_received.emit(f"{username} est banni et ne peut pas envoyer de messages.")
+        if self.is_user_banned(sender_username):
+            self.server.message_received.emit(f"{sender_username} est banni et ne peut pas envoyer de messages.")
             return
 
         # Enregistrement du message uniquement si ce n'est pas un changement de canal
-        if not message.lower().startswith("changement de canal"):
-            current_channel_id = client_handler.current_channel
+        if not content.lower().startswith("changement de canal"):
+            current_channel_id = self.current_channel
             if current_channel_id is not None:
                 content = content.strip()
                 self.server.message_received.emit(f"{sender_username}: {content}")
@@ -102,19 +102,33 @@ class ClientHandler(QThread):
                 self.server.broadcast_message(f"{sender_username}: {content}", self.addr)
         else:
             # Si c'est un "Changement de canal", mettez à jour le canal actuel du client
-            parts = message.split(":")
+            parts = content.split(":")
             if len(parts) >= 2:
                 channel_name = parts[1].strip()
                 channel_id = self.server.CHANNEL_IDS.get(channel_name)
                 if channel_id is not None:
-                    client_handler.set_current_channel(channel_id)
-                    self.server.message_received.emit(f"{sender_username}: {message}")
-                    self.server.insert_message(sender_username, None, message)
-                    self.server.broadcast_message(f"{sender_username}: {message}", self.addr)
+                    # Mettez à jour le canal actuel du client
+                    self.set_current_channel(channel_id)
+                    self.server.message_received.emit(f"{sender_username}: Changement de canal : {channel_name}")
+                    self.server.insert_message(sender_username, None, f"Changement de canal : {channel_name}")
+                    self.server.broadcast_message(f"{sender_username}: Changement de canal : {channel_name}", self.addr)
                 else:
                     self.server.message_received.emit(f"Canal non trouvé : {channel_name}")
             else:
-                self.server.message_received.emit(f"Commande de changement de canal mal formée : {message}")
+                self.server.message_received.emit(f"Commande de changement de canal mal formée : {content}")
+
+    def extract_username_and_content(self, message):
+        # Divisez le message en parties en utilisant le délimiteur ":"
+        parts = message.split(':')
+
+        # Assurez-vous qu'il y a au moins deux parties (username et le reste du message)
+        if len(parts) >= 2:
+            sender_username = parts[0].strip()
+            content = ':'.join(parts[1:]).strip()
+            return sender_username, content
+
+        return "", ""
+
 
     def is_user_banned(self, username):
         try:
@@ -128,11 +142,16 @@ class ClientHandler(QThread):
             print(f"Erreur lors de la vérification du statut de ban pour {username} : {e}")
             return False
 
+class ChannelStatus(Enum):
+    OPEN = "Ouvert"
+    ON_REQUEST = "Sur demande"
+    VALIDATION_REQUIRED = "Validation nécessaire"
 
 class Server(QThread):
     client_connected = pyqtSignal(tuple)
     message_received = pyqtSignal(str)
     new_user_created = pyqtSignal(str)
+    channel_request_received = pyqtSignal(str, str)
 
     CHANNEL_IDS = {
         "Général": 1,
@@ -144,6 +163,7 @@ class Server(QThread):
 
     def __init__(self):
         super().__init__()
+
         self.auth_window = AuthenticationWindow()
         if self.auth_window.exec() != QDialog.Accepted:
             sys.exit(0)
@@ -165,6 +185,7 @@ class Server(QThread):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check_user_timeouts)
         self.timer.start(60000)  # Vérifier toutes les 60 secondes (ajustez selon vos besoins)
+        self.channels_requests = {}  # Dictionnaire pour stocker les demandes de canaux en attente d'approbation
 
     def run(self):
         try:
@@ -173,9 +194,9 @@ class Server(QThread):
                 self.client_connected.emit(addr)
                 self.message_received.emit(f"Connexion acceptée de {addr[0]}:{addr[1]}")
 
-                if self.verify_credentials(client_socket):
-                    username = "root"  # Utilisez le nom d'utilisateur fourni lors de l'authentification
-                    client_handler = ClientHandler(client_socket, addr, self, username)
+                verified_username = self.verify_credentials(client_socket)
+                if verified_username:
+                    client_handler = ClientHandler(client_socket, addr, self, verified_username)
                     client_handler.set_current_channel(1)  # Spécifie le canal initial ici
                     client_handler.disconnected.connect(self.handle_client_disconnected)
                     client_handler.start()
@@ -201,7 +222,8 @@ class Server(QThread):
             if action == "création_utilisateur":
                 return self.handle_user_creation(client_socket, credentials)
             elif action == "connexion":
-                return self.handle_user_authentication(credentials)
+                # Modifiez ici pour passer le nom d'utilisateur à la création de ClientHandler
+                return self.handle_user_authentication(client_socket, credentials)
             else:
                 print(f"Action non reconnue : {action}")
                 return False
@@ -228,7 +250,7 @@ class Server(QThread):
             print(f"Erreur lors de la gestion de la création d'utilisateur : {e}")
             return False
 
-    def handle_user_authentication(self, credentials):
+    def handle_user_authentication(self, client_socket, credentials):
         try:
             # Vérification des identifiants pour la connexion
             username, password = credentials[1], credentials[2]
@@ -241,6 +263,16 @@ class Server(QThread):
 
             if result:
                 print(f"Identifiants valides pour {username}")
+
+                # Imprimez le nom d'utilisateur ici pour vous assurer qu'il est correct
+                print(f"Nom d'utilisateur transmis à la création de ClientHandler : {username}")
+
+                # Créez une instance de ClientHandler en passant le nom d'utilisateur
+                client_handler = ClientHandler(client_socket, None, self, username)
+                client_handler.set_current_channel(1)  # Spécifie le canal initial ici
+                client_handler.disconnected.connect(self.handle_client_disconnected)
+                client_handler.start()
+                self.clients.append((client_handler, None))
             else:
                 print(f"Identifiants invalides pour {username}")
 
@@ -291,9 +323,11 @@ class Server(QThread):
 
                 if result:
                     print(f"Identifiants valides pour {username}")
+                    print(f"Nom d'utilisateur transmis à la création de ClientHandler : {username}")
+                    return username
                 else:
                     print(f"Identifiants invalides ou utilisateur banni pour {username}")
-
+                    return None
                 return result is not None
 
         except Exception as e:
@@ -315,6 +349,10 @@ class Server(QThread):
     def handle_client_message(self, message, username, client_handler):
         sender_username, content = message.split(':', 1)
         sender_username = sender_username.strip()
+
+        if "Demande de canal" in content:
+            self.handle_channel_request(client_handler, sender_username, content)
+            return
 
         # Enregistrement du message uniquement si ce n'est pas un changement de canal
         if not message.lower().startswith("changement de canal"):
@@ -450,6 +488,168 @@ class Server(QThread):
         except Exception as e:
             print(f"Erreur lors de la suppression du Ban de l'utilisateur {username} : {e}")
 
+    def handle_channel_request(self, client_handler, sender_username, request_message):
+        parts = request_message.split(":")
+        if len(parts) >= 2:
+            channel_name = parts[1].strip()
+            channel_id = self.CHANNEL_IDS.get(channel_name)
+            if channel_id is not None:
+                if self.is_user_in_channel(sender_username, channel_id):
+                    self.message_received.emit(f"Membre du salon {channel_id} : {sender_username}")
+                else:
+                    if self.is_channel_request_valid(channel_id, client_handler):
+                        # Émettre le signal pour demander l'affichage de la fenêtre pop-up
+                        self.channel_request_received.emit(
+                            sender_username, channel_name)
+                    else:
+                        if channel_id not in self.channels_requests:
+                            self.channels_requests[channel_id] = set()
+
+                        self.channels_requests[channel_id].add(sender_username)
+                        self.message_received.emit(
+                            f"Demande de salon en attente d'approbation pour {sender_username} : {channel_name}")
+            else:
+                self.message_received.emit(f"Canal non trouvé : {channel_name}")
+        else:
+            self.message_received.emit(
+                f"Commande de demande de salon mal formée : {request_message}")
+
+    def add_user_to_channel(self, username, channel_id):
+        try:
+            # Vérifier si l'utilisateur est déjà dans le canal
+            if not self.is_user_in_channel(username, channel_id):
+                # Si l'utilisateur n'est pas dans le canal, ajouter à la table
+                cursor = self.db_connection.cursor()
+                cursor.execute("INSERT INTO user_channels (username, channel_id) VALUES (%s, %s)",
+                               (username, channel_id))
+                self.db_connection.commit()
+                cursor.close()
+
+        except Exception as e:
+            print(f"Erreur lors de l'ajout de l'utilisateur au canal dans la base de données : {e}")
+
+    def is_user_in_channel(self, username, channel_id):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("SELECT COUNT(*) FROM user_channels WHERE username = %s AND channel_id = %s",
+                           (username, channel_id))
+            result = cursor.fetchone()[0]
+            cursor.close()
+
+            # Si le résultat est supérieur à zéro, l'utilisateur est déjà dans le canal
+            return result > 0
+
+        except Exception as e:
+            print(f"Erreur lors de la vérification de l'association de l'utilisateur au canal : {e}")
+            return False
+    def insert_user_channel(self, username, channel_id):
+        try:
+            cursor = self.db_connection.cursor()
+            cursor.execute("INSERT INTO user_channels (username, channel_id) VALUES (%s, %s)", (username, channel_id))
+            self.db_connection.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"Erreur lors de l'insertion de l'adhésion dans la base de données : {e}")
+
+    def broadcast_channel_members(self, channel_id):
+        try:
+            cursor = self.db_connection.cursor(dictionary=True)
+            cursor.execute("SELECT username FROM user_channels WHERE channel_id = %s", (channel_id,))
+            members = cursor.fetchall()
+            cursor.close()
+
+            member_names = [member["username"] for member in members]
+            member_list = ", ".join(member_names)
+
+            self.message_received.emit(f"Membres du salon {channel_id} : {member_list}")
+
+        except Exception as e:
+            print(f"Erreur lors de la diffusion des membres du salon : {e}")
+
+    def is_channel_request_valid(self, channel_id, client_handler):
+        # Ajoutez ici votre logique pour valider la demande de salon
+        # Par exemple, vérifiez si le salon nécessite une validation
+
+        # Supposez que les canaux "Blabla", "Informatique" et "Marketing" nécessitent une validation
+        channels_requiring_approval = {"Comptabilité", "Informatique", "Marketing"}
+
+        # Vérifiez si le canal nécessite une validation
+        if channel_id in self.CHANNEL_IDS.values() and self.get_channel_name(channel_id) in channels_requiring_approval:
+            # Le canal nécessite une validation, vous devrez implémenter votre propre logique ici
+            # Par exemple, vous pouvez vérifier une liste d'approbation ou d'autres critères
+            return self.is_approval_required_for_user(channel_id, client_handler.username)
+        else:
+            # Le canal ne nécessite pas de validation
+            return True
+
+    def is_approval_required_for_user(self, channel_id, username):
+        try:
+            # Exécutez une requête pour vérifier si l'utilisateur est approuvé pour le canal
+            cursor = self.db_connection.cursor()
+            cursor.execute("SELECT COUNT(*) FROM user_channels WHERE username = %s AND channel_id = %s",
+                           (username, channel_id))
+            result = cursor.fetchone()[0]
+            cursor.close()
+
+            # Si l'utilisateur est dans la table user_channels, cela signifie qu'il est approuvé
+            # Sinon, l'approbation est nécessaire
+            return result == 0
+
+        except Exception as e:
+            print(f"Erreur lors de la vérification de l'approbation de l'utilisateur : {e}")
+            return False
+
+    def get_channel_name(self, channel_id):
+        # Retourne le nom du canal à partir de son identifiant
+        for name, cid in self.CHANNEL_IDS.items():
+            if cid == channel_id:
+                return name
+        return None
+
+    def validate_channel_request(self, username, channel_id, approve):
+        if channel_id in self.channels_requests and username in self.channels_requests[channel_id]:
+            self.channels_requests[channel_id].remove(username)
+            if approve:
+                # Ajoutez l'utilisateur au salon et insérez l'adhésion dans la base de données
+                self.insert_user_channel(username, channel_id)
+                self.message_received.emit(f"Demande d'adhésion approuvée : {username} rejoint le salon {channel_id}.")
+            else:
+                self.message_received.emit(f"Demande d'adhésion refusée : {username} pour le salon {channel_id}.")
+
+    def is_user_waiting_for_approval(self, channel_id, username):
+        # Vérifie si l'utilisateur est en attente d'approbation pour un canal spécifique
+        return channel_id in self.channels_requests and username in self.channels_requests[channel_id]
+
+    def remove_user_from_approval_list(self, channel_id, username):
+        # Retire l'utilisateur de la liste des demandes en attente
+        if channel_id in self.channels_requests and username in self.channels_requests[channel_id]:
+            self.channels_requests[channel_id].remove(username)
+
+class ChannelRequestDialog(QDialog):
+    def __init__(self, sender_username, channel_name, accept_callback, parent=None):
+        super().__init__(parent)
+
+        self.setWindowTitle("Demande de Salon")
+        self.setGeometry(300, 300, 300, 150)
+
+        layout = QVBoxLayout()
+
+        label = QLabel(f"{sender_username} a demandé à rejoindre le salon {channel_name}.")
+        layout.addWidget(label)
+
+        accept_button = QPushButton("Accepter", self)
+        accept_button.clicked.connect(lambda: self.accept_and_close(accept_callback, sender_username, channel_name))
+        layout.addWidget(accept_button)
+
+        refuse_button = QPushButton("Refuser", self)
+        refuse_button.clicked.connect(self.reject)
+        layout.addWidget(refuse_button)
+
+        self.setLayout(layout)
+
+    def accept_and_close(self, accept_callback, sender_username, channel_name):
+        accept_callback(sender_username, channel_name)
+        self.accept()  # Ferme la boîte de dialogue
 
 class ServerWindow(QMainWindow):
     stop_server_signal = pyqtSignal()
@@ -517,6 +717,7 @@ class ServerWindow(QMainWindow):
         self.ban_datetime_edit = QDateTimeEdit(self)
         self.layout.addWidget(self.ban_datetime_edit)
 
+        server.channel_request_received.connect(self.show_channel_request_dialog)
 
         self.server.start()
 
@@ -591,7 +792,35 @@ class ServerWindow(QMainWindow):
         except Exception as e:
             print(f"Erreur lors du chargement des utilisateurs : {e}")
 
+    def show_channel_request_dialog(self, sender_username, channel_name):
+        try:
+            print("Avant la création de la fenêtre pop-up")
+            dialog = ChannelRequestDialog(sender_username, channel_name, self.accept_channel_request)
+            print("Après la création de la fenêtre pop-up")
+            result = dialog.exec_()
+        except Exception as e:
+            print(f"Erreur lors de l'affichage de la fenêtre pop-up : {e}")
+        finally:
+            # Assurez-vous de fermer la fenêtre pop-up après utilisation
+            if 'dialog' in locals():
+                dialog.close()
+
+    def accept_channel_request(self, sender_username, channel_name):
+        # Ajoutez ici la logique pour accepter la demande de canal
+        # Par exemple, approuver l'utilisateur et mettre à jour la base de données
+        channel_id = self.server.CHANNEL_IDS.get(channel_name)
+
+        if channel_id is not None:
+            # Ajoutez l'utilisateur au canal et insérez l'adhésion dans la base de données
+            self.server.add_user_to_channel(sender_username, channel_id)
+            self.server.message_received.emit(
+                f"Demande d'adhésion approuvée : {sender_username} rejoint le salon {channel_name}.")
+            self.server.broadcast_channel_members(channel_id)
+        else:
+            self.server.message_received.emit(f"Canal non trouvé : {channel_name}")
+
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     server = Server()
+    window = ServerWindow(server)
     sys.exit(app.exec_())
